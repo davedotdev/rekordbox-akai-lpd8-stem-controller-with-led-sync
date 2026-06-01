@@ -1,0 +1,8 @@
+.DS_Store
+
+# Local dev build of the bridge
+lpd8-led-bridge/lpd8-led-bridge
+lpd8-led-bridge/rb-lpd8-led-bridge
+
+# Build output — binaries are uploaded as GitHub Release assets, not committed
+lpd8-led-bridge/releases/

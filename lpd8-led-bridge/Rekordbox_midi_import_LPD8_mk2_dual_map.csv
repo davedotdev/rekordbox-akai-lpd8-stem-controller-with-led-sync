@@ -1,0 +1,12 @@
+@file,1,LPD8 mk2
+ActivePartBass,,DdjSxPad,,992A,9926,,,,992A,9926,,,,
+ActivePartDrums,,DdjSxPad,,992B,9927,,,,992B,9927,,,,
+ActivePartInst,,DdjSxPad,,9929,9925,,,,9929,9925,,,,
+ActivePartVocal,,DdjSxPad,,9928,9924,,,,9928,9924,,,,
+NoFunction,,DdjSxPad,,8928,8924,,,,8929,8924,,,,
+NoFunction,,DdjSxPad,,8929,8925,,,,892A,8925,,,,
+NoFunction,,DdjSxPad,,892A,8926,,,,,8926,,,,
+NoFunction,,DdjSxPad,,,892B,,,,8928,892B,,,,
+PartIsolatorDrums,,KnobSlider,,B048,B04C,,,,,,,,,
+PartIsolatorInst,,KnobSlider,,B047,B04B,,,,,,,,,
+PartIsolatorVocal,,KnobSlider,,B046,B04A,,,,,,,,,
