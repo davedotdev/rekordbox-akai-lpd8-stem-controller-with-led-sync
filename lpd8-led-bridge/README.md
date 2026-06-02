@@ -2,6 +2,11 @@
 
 An external Akai **LPD8 MK2** MIDI controller with **LED sync for Rekordbox**: a Go program that lights the LPD8's RGB pads to reflect Rekordbox stem state, by tracking pad presses and knob moves locally and driving the LEDs over SysEx.
 
+Watch here > 
+
+[![Quick overview!](https://img.youtube.com/vi/2Ip9hci9EY4/0.jpg)](https://www.youtube.com/watch?v=2Ip9hci9EY4)
+
+
 **Tested with Rekordbox 7.2.14.0323.** (Run `rb-lpd8-led-bridge -version` to see the build and tested Rekordbox version.)
 
 > The bridge only ever reads the LPD8's own MIDI output — it does **not** listen to Rekordbox — so it avoids feedback loops. It tracks state locally; if the LEDs ever drift out of sync, use the master/reset knob (see [LED Behavior](#led-behavior)) or restart the bridge.
