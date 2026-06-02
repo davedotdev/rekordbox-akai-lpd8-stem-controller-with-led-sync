@@ -11,7 +11,10 @@
     "channel": 10,
     "knob_channel": 0,
     "knob_max": 127,
-    "master_knobs": [73, 77]
+    "master_knobs": {
+      "73": [40, 41, 42, 43],
+      "77": [36, 37, 38, 39]
+    }
   },
   "knob_to_pad": {
     "70": [40],

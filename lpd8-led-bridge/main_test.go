@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -108,25 +109,74 @@ func TestKnobScalesToFullBrightness(t *testing.T) {
 	}
 }
 
-// The master knob (CC 73 by default) is a hot-path reset: full travel lights
-// every pad, zero turns every pad off.
-func TestMasterKnobResetsAllPads(t *testing.T) {
-	resetState() // default master_knobs includes CC 73
+// Reset knobs are deck-scoped: knob 4 (CC 73) drives only the top row (40-43),
+// knob 8 (CC 77) only the bottom row (36-39) — not all pads.
+func TestMasterKnobIsDeckScoped(t *testing.T) {
+	resetState() // default: CC73 -> top row, CC77 -> bottom row
 
-	handleMasterKnob(73, 0) // all off
+	topRow := map[uint8]bool{40: true, 41: true, 42: true, 43: true}
+
+	// Start with every pad on (tests don't run main's startup init).
+	handleMasterKnob(73, 127)
+	handleMasterKnob(77, 127)
+
+	// Knob 4 to zero must turn off only the top row; bottom row stays on.
+	handleMasterKnob(73, 0)
 	for note := range noteToPayloadPos {
-		if padState[note] {
-			t.Errorf("master knob at zero: pad %d should be off", note)
+		want := !topRow[note] // top off, bottom still on
+		if padState[note] != want {
+			t.Errorf("knob 4 reset: pad %d on=%v, want %v", note, padState[note], want)
 		}
 	}
 
-	handleMasterKnob(73, 127) // all on, full
-	for note, pos := range noteToPayloadPos {
-		if !padState[note] {
-			t.Errorf("master knob full: pad %d should be on", note)
+	// Knob 8 to zero now turns off the bottom row too — everything off.
+	handleMasterKnob(77, 0)
+	for note := range noteToPayloadPos {
+		if padState[note] {
+			t.Errorf("after both resets to zero: pad %d should be off", note)
 		}
-		if padColors[pos] != baseColor(note) {
-			t.Errorf("master knob full: pad %d should be full row colour %v, got %v", note, baseColor(note), padColors[pos])
+	}
+
+	// Knob 4 full lights only the top row, at its blue row colour.
+	handleMasterKnob(73, 127)
+	for note, pos := range noteToPayloadPos {
+		if topRow[note] {
+			if !padState[note] || padColors[pos] != baseColor(note) {
+				t.Errorf("knob 4 full: top pad %d should be full blue", note)
+			}
+		} else if padState[note] {
+			t.Errorf("knob 4 full: bottom pad %d should be untouched (off)", note)
+		}
+	}
+}
+
+// A v0.2 config with the old array form of master_knobs must still load (not
+// crash), with each listed CC resetting all pads.
+func TestLegacyMasterKnobsArrayLoads(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/legacy.json"
+	cfg := `{
+	  "lpd8": { "top_row": [40,41,42,43], "bottom_row": [36,37,38,39],
+	            "channel": 10, "knob_channel": 0, "knob_max": 127,
+	            "master_knobs": [73, 77] },
+	  "knob_to_pad": { "70": [40] }
+	}`
+	if err := os.WriteFile(path, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("legacy array master_knobs should load, got: %v", err)
+	}
+	buildMappings(loaded)
+
+	for _, cc := range []uint8{73, 77} {
+		pads, ok := masterKnobs[cc]
+		if !ok {
+			t.Errorf("legacy reset knob CC%d missing", cc)
+		} else if len(pads) != 8 {
+			t.Errorf("legacy reset knob CC%d should cover all 8 pads, got %d", cc, len(pads))
 		}
 	}
 }

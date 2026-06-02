@@ -40,7 +40,7 @@ Download the `.zip` for your Mac from the project's **GitHub Releases** page and
 
 The binaries are signed and notarized by Apple, so they run without the "unidentified developer" warning (the first launch does a quick online Gatekeeper check). Then make it executable: `chmod +x rb-lpd8-led-bridge-darwin-arm64`.
 
-Windows isn't prebuilt (the rtmidi CGO dependency needs a native toolchain) — build it from source on a Windows machine with `build.sh` (see [Building Releases](#building-releases)).
+**Windows:** a `rb-lpd8-led-bridge-windows-amd64.exe` may be attached to a release (built per [Building Releases](#building-releases)). It is **not code-signed yet** (signing pending), so Windows SmartScreen will warn — click *More info → Run anyway*. You can also build it yourself (`./build.sh <version> windows`, or run `build.sh` on a Windows machine).
 
 ### From Source
 
@@ -141,7 +141,6 @@ Rekordbox can't distinguish two identical LPD8s, so a **single** LPD8 controls b
 > ```
 >
 > Then set `device.out_port_index` in `config.json` to the index that worked.
-| `-debug` | Enable verbose debug logging |
 
 ## LED Behavior
 
@@ -167,7 +166,7 @@ PADS  ┌─────┬─────┬─────┬─────�
 | **Press a pad** | Toggle that stem's on/off LED, in its deck colour (independent latch) |
 | **Knob to 0** | The stem LED(s) that knob drives turn OFF |
 | **Knob above 2** | Those stem LED(s) turn ON, brightness scales with value, keeping the deck colour |
-| **Master knob (last of each row, CC 73/77)** | Drives **all** pads at once — full = all on, zero = all off. A hot-path reset if the LEDs drift out of sync. |
+| **Reset knob (last of each row)** | Knob 4 (CC 73) resets the **top row (Deck 1)**, knob 8 (CC 77) the **bottom row (Deck 2)** — full = that deck's stems on, zero = off. A hot-path resync if the LEDs drift. |
 
 > The master knobs (knob 4 / knob 8) aren't mapped in Rekordbox, so they only affect the bridge's LEDs — handy as a dedicated resync that doesn't touch the audio.
 
@@ -198,7 +197,10 @@ Generate a default config with `-genconfig config.json`:
     "channel": 10,
     "knob_channel": 0,
     "knob_max": 127,
-    "master_knobs": [73, 77]
+    "master_knobs": {
+      "73": [40, 41, 42, 43],
+      "77": [36, 37, 38, 39]
+    }
   },
   "device": {
     "out_port": "LPD8 mk2",
@@ -221,7 +223,7 @@ Generate a default config with `-genconfig config.json`:
 | `lpd8.channel` | MIDI channel for pads (1-16) |
 | `lpd8.knob_channel` | MIDI channel for knobs (0 = all channels) |
 | `lpd8.knob_max` | CC value the knob emits at full travel — mapped to full LED brightness. LPD8 knobs send the full 0–127, so the default is 127; lower it only if your knob tops out early (find its max with `-debug`). |
-| `lpd8.master_knobs` | CC numbers that drive **all** pad LEDs at once — a reset/resync. Full travel = all stems on at full, zero = all off, in between = master dimmer. Default `[73, 77]` (the last knob of each row). |
+| `lpd8.master_knobs` | Reset knobs: each CC → the pad notes it drives together (full = those stems on, zero = off, in between = dimmer). Default scopes knob 4 (CC 73) to the top row and knob 8 (CC 77) to the bottom row, so each resets one deck. |
 | `device.out_port` | Output port name to match (substring); used when `out_port_index` is null |
 | `device.out_port_index` | Output port index from `-list` (anchored to a USB slot); distinguishes identical units |
 | `knob_to_pad` | Which pad LED(s) each knob CC drives (list — one knob can drive several) |
@@ -275,20 +277,30 @@ This shows verbose logging of pad presses, knob changes, and LED state changes.
 
 ## Building Releases
 
-Due to the CGO dependency (rtmidi), binaries must be built on each target platform — there's no cross-compilation.
+rtmidi uses CGO, so each target needs a matching C/C++ toolchain.
 
 ```bash
-# On macOS: builds BOTH darwin/arm64 and darwin/amd64 and stamps the version
-./build.sh 0.2
+# macOS: builds BOTH darwin/arm64 and darwin/amd64 and stamps the version
+./build.sh 0.3
 # Creates: releases/rb-lpd8-led-bridge-darwin-arm64
 #          releases/rb-lpd8-led-bridge-darwin-amd64
 
-# On Windows: run the script on a Windows machine
-./build.sh 0.2
+# Windows amd64, cross-compiled from macOS/Linux (needs mingw-w64):
+brew install mingw-w64           # macOS  (Debian: apt install gcc-mingw-w64)
+./build.sh 0.3 windows
 # Creates: releases/rb-lpd8-led-bridge-windows-amd64.exe
+#
+# Or just run ./build.sh 0.3 on a Windows machine.
 ```
 
+> **Windows code signing is pending.** The Windows `.exe` is not yet signed, so
+> SmartScreen / "Windows protected your PC" warnings are expected — users click
+> *More info → Run anyway*. Authenticode signing + reputation is planned for a
+> future release. (macOS builds are signed and notarized — see below.)
+
 ### Notarizing the macOS build (maintainer)
+
+**Note: The Mac OS versions are notarized already in the releases. No security warnings etc will bug you. Not the case fow Windows. That will be done later**.
 
 So macOS users can run the download without the "unidentified developer" warning, sign and notarize the Mac binaries with `notarize.sh`. Requires an Apple Developer account and a **Developer ID Application** certificate.
 

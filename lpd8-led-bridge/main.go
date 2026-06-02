@@ -28,7 +28,10 @@ type Config struct {
 		Channel     int    `json:"channel"`      // MIDI channel for pads (1-16, default: 10)
 		KnobChannel int    `json:"knob_channel"` // MIDI channel for knobs (0=all, 1-16, default: 0)
 		KnobMax     int    `json:"knob_max"`     // CC value the knob emits at full travel (maps to full brightness; default 127)
-		MasterKnobs []int  `json:"master_knobs"` // CCs that set ALL pad LEDs at once (reset: full=all on, zero=all off)
+
+		// Reset knobs: CC number -> the pad notes it drives together (full=on, zero=off).
+		// A hot-path resync, scoped to one deck (e.g. knob 4 -> top row, knob 8 -> bottom).
+		MasterKnobs masterKnobMap `json:"master_knobs"`
 	} `json:"lpd8"`
 
 	// Device binding: which physical LPD8 this config drives (for multi-deck setups).
@@ -53,6 +56,32 @@ type Config struct {
 	KnobToPadLegacy map[string][]int `json:"knob_to_blue,omitempty"`
 }
 
+// masterKnobMap maps a reset-knob CC to the pad notes it drives. It accepts two
+// JSON shapes for backward compatibility:
+//   - v0.3 object form:  {"73": [40,41,42,43], "77": [36,37,38,39]}  (per-deck)
+//   - older array form:  [73, 77]   (each CC resets all pads; expanded later)
+//
+// An entry with no pad list is treated as "all pads" in buildMappings.
+type masterKnobMap map[string][]int
+
+func (m *masterKnobMap) UnmarshalJSON(b []byte) error {
+	var obj map[string][]int
+	if err := json.Unmarshal(b, &obj); err == nil {
+		*m = obj
+		return nil
+	}
+	var arr []int
+	if err := json.Unmarshal(b, &arr); err != nil {
+		return fmt.Errorf("master_knobs must be an object {\"cc\":[pads]} or an array [cc,...]: %w", err)
+	}
+	out := make(map[string][]int, len(arr))
+	for _, cc := range arr {
+		out[fmt.Sprintf("%d", cc)] = nil // nil = all pads (legacy "reset all")
+	}
+	*m = out
+	return nil
+}
+
 // Default configuration
 func defaultConfig() Config {
 	cfg := Config{}
@@ -60,9 +89,14 @@ func defaultConfig() Config {
 	cfg.LPD8.BottomRow = [4]int{36, 37, 38, 39}
 	cfg.LPD8.Knobs = [8]int{70, 71, 72, 73, 74, 75, 76, 77}
 	cfg.LPD8.Channel = 10
-	cfg.LPD8.KnobChannel = 0             // 0 = accept all channels (global)
-	cfg.LPD8.KnobMax = 127               // LPD8 knobs emit the full 0-127; lower this only if yours tops out early
-	cfg.LPD8.MasterKnobs = []int{73, 77} // last knob of each row = all-lights reset (full=on, zero=off)
+	cfg.LPD8.KnobChannel = 0 // 0 = accept all channels (global)
+	cfg.LPD8.KnobMax = 127   // LPD8 knobs emit the full 0-127; lower this only if yours tops out early
+
+	// Reset knobs: knob 4 resets Deck 1 (top/blue), knob 8 resets Deck 2 (bottom/amber).
+	cfg.LPD8.MasterKnobs = masterKnobMap{
+		"73": {40, 41, 42, 43}, // knob 4 -> Deck 1 top row
+		"77": {36, 37, 38, 39}, // knob 8 -> Deck 2 bottom row
+	}
 
 	// Default device binding: match the LPD8 by name. For a second unit whose
 	// name collides, set device.out_port_index to its position in -list instead.
@@ -166,10 +200,29 @@ func buildMappings(cfg Config) {
 		knobMax = 127
 	}
 
-	// Rebuild masterKnobs (CCs that drive every pad at once)
-	masterKnobs = make(map[uint8]bool)
-	for _, cc := range cfg.LPD8.MasterKnobs {
-		masterKnobs[uint8(cc)] = true
+	// All pad notes, used when a reset knob has no explicit pad list (legacy "reset all").
+	var allPads []uint8
+	for _, n := range cfg.LPD8.TopRow {
+		allPads = append(allPads, uint8(n))
+	}
+	for _, n := range cfg.LPD8.BottomRow {
+		allPads = append(allPads, uint8(n))
+	}
+
+	// Rebuild masterKnobs (reset CC -> the pads it drives together)
+	masterKnobs = make(map[uint8][]uint8)
+	for ccStr, padNotes := range cfg.LPD8.MasterKnobs {
+		var cc int
+		fmt.Sscanf(ccStr, "%d", &cc)
+		if len(padNotes) == 0 {
+			masterKnobs[uint8(cc)] = allPads // legacy array form: reset all pads
+			continue
+		}
+		pads := make([]uint8, len(padNotes))
+		for i, p := range padNotes {
+			pads[i] = uint8(p)
+		}
+		masterKnobs[uint8(cc)] = pads
 	}
 }
 
@@ -233,10 +286,10 @@ const knobOnThreshold = 2
 // Runtime mappings (rebuilt from config)
 var noteToPayloadPos = map[uint8]int{}
 var isTopRow = map[uint8]bool{}
-var knobToPad = map[uint8][]uint8{} // knob CC -> pad note(s) it drives
-var padToKnob = map[uint8]uint8{}   // pad note -> its governing knob CC
-var knobValue = map[uint8]uint8{}   // knob CC -> last seen value (absent = never moved)
-var masterKnobs = map[uint8]bool{}  // knob CC -> true if it sets all pad LEDs at once
+var knobToPad = map[uint8][]uint8{}   // knob CC -> pad note(s) it drives
+var padToKnob = map[uint8]uint8{}     // pad note -> its governing knob CC
+var knobValue = map[uint8]uint8{}     // knob CC -> last seen value (absent = never moved)
+var masterKnobs = map[uint8][]uint8{} // reset knob CC -> the pad notes it drives together
 
 // Current LED colors for each pad position
 var padColors [8]Color
@@ -359,16 +412,26 @@ func handleKnobChange(cc uint8, value uint8) {
 	}
 }
 
-// handleMasterKnob drives every pad LED at once - a hot-path reset for state
-// desyncs. Full travel turns all stems on at full brightness, zero turns them
-// all off; in between it acts as a master dimmer. Each pad keeps its row colour.
+// handleMasterKnob drives the reset knob's pad set together - a hot-path resync
+// for state desyncs, scoped to one deck (e.g. knob 4 = top row, knob 8 = bottom).
+// Full travel turns those stems on at full brightness, zero turns them off; in
+// between it acts as a master dimmer. Each pad keeps its row colour.
 func handleMasterKnob(cc uint8, value uint8) {
+	pads, ok := masterKnobs[cc]
+	if !ok {
+		return
+	}
+
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
 
 	on := value >= knobOnThreshold
 	brightness := uint8(min(int(value)*127/knobMax, 127))
-	for note, pos := range noteToPayloadPos {
+	for _, note := range pads {
+		pos, ok := noteToPayloadPos[note]
+		if !ok {
+			continue
+		}
 		padState[note] = on
 		if on {
 			padColors[pos] = scaleColor(baseColor(note), brightness)
@@ -378,7 +441,7 @@ func handleMasterKnob(cc uint8, value uint8) {
 	}
 
 	pushLEDs()
-	debugLog("Master knob CC%d=%d -> all pads on=%v (brightness %d)", cc, value, on, brightness)
+	debugLog("Master knob CC%d=%d -> pads %v on=%v (brightness %d)", cc, value, pads, on, brightness)
 }
 
 func listPorts() {
@@ -488,7 +551,7 @@ func printBanner(w io.Writer, version, outDesc, configSrc string, numInputs int)
 	fmt.Fprintln(w, field("output", outDesc))
 	fmt.Fprintln(w, field("inputs", fmt.Sprintf("%d MIDI port(s)", numInputs)))
 	fmt.Fprintln(w, field("config", configSrc))
-	fmt.Fprintln(w, field("reset", "knob 4 / knob 8 — all LEDs full / off"))
+	fmt.Fprintln(w, field("reset", "knob 4 = Deck 1 · knob 8 = Deck 2  (full / off)"))
 	fmt.Fprintln(w, field("tested", "Rekordbox "+TestedRekordbox))
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "   "+dim("Ctrl-C to quit"))
@@ -694,7 +757,7 @@ func main() {
 		case msg.GetControlChange(&ch, &key, &val):
 			// Handle knob (CC) changes - accept configured channel or all (255)
 			if lpd8KnobChannel == 255 || ch == lpd8KnobChannel {
-				if masterKnobs[key] {
+				if _, isMaster := masterKnobs[key]; isMaster {
 					handleMasterKnob(key, val)
 				} else {
 					handleKnobChange(key, val)

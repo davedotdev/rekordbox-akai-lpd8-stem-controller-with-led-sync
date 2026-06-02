@@ -54,6 +54,9 @@ if [ ${#binaries[@]} -eq 0 ]; then
     exit 1
 fi
 
+ATTEMPTS="${ATTEMPTS:-3}"   # notary submit retries (Apple's service can time out transiently)
+failed=()
+
 for bin in "${binaries[@]}"; do
     case "$bin" in *.zip) continue ;; esac   # skip any existing zips
     echo "==> $bin"
@@ -70,13 +73,36 @@ for bin in "${binaries[@]}"; do
     /usr/bin/ditto -c -k "$bin" "$zip"
     [ -f "$zip" ] || { echo "ERROR: zip was not created: $zip" >&2; exit 1; }
 
-    # Submit and wait for Apple's verdict.
-    echo "    submitting to Apple (this can take a minute)..."
-    xcrun notarytool submit "$zip" --keychain-profile "$NOTARY_PROFILE" --wait
+    # Submit and wait. Retry on transient network errors (connectTimeout etc.).
+    # The `if` condition exempts this from set -e / the ERR trap, so a failed
+    # attempt is handled here rather than aborting the whole run.
+    ok=0
+    for attempt in $(seq 1 "$ATTEMPTS"); do
+        echo "    submitting to Apple (attempt $attempt/$ATTEMPTS)..."
+        if xcrun notarytool submit "$zip" --keychain-profile "$NOTARY_PROFILE" --wait; then
+            ok=1
+            break
+        fi
+        if [ "$attempt" -lt "$ATTEMPTS" ]; then
+            echo "    submit failed (likely a network blip) — retrying in 15s..." >&2
+            sleep 15
+        fi
+    done
 
-    echo "Notarized: $zip"
+    if [ "$ok" -eq 1 ]; then
+        echo "Notarized: $zip"
+    else
+        echo "FAILED after $ATTEMPTS attempts: $zip" >&2
+        failed+=("$zip")
+    fi
     echo ""
 done
+
+if [ ${#failed[@]} -gt 0 ]; then
+    echo "Some submissions did not complete: ${failed[*]}" >&2
+    echo "These are almost always transient — just re-run ./notarize.sh." >&2
+    exit 1
+fi
 
 echo "Done. Upload the *.zip files as GitHub Release assets."
 echo "Note: bare CLI binaries can't be stapled — Gatekeeper verifies the"

@@ -1,12 +1,19 @@
 #!/bin/bash
 
-# Build script for lpd8-led-bridge
-# Note: rtmidi driver uses CGO, so cross-compilation requires native toolchains
-# For full cross-compilation, build on each target platform or use Docker
+# Build script for rb-lpd8-led-bridge
+#
+# Usage:
+#   ./build.sh <version>            build for the current platform
+#                                   (macOS builds both arm64 and amd64)
+#   ./build.sh <version> windows    cross-compile a Windows amd64 .exe
+#                                   (needs mingw-w64: brew install mingw-w64)
+#
+# rtmidi uses CGO, so each target needs a matching C/C++ toolchain.
 
 set -e
 
 VERSION=${1:-"dev"}
+TARGET="${2:-}"
 OUTPUT_DIR="releases"
 APP_NAME="rb-lpd8-led-bridge"
 
@@ -35,6 +42,29 @@ esac
 
 echo "Detected platform: $CURRENT_OS/$CURRENT_ARCH"
 echo ""
+
+# Windows cross-build (opt-in): ./build.sh <version> windows  — needs mingw-w64.
+if [ "$TARGET" = "windows" ] && [ "$CURRENT_OS" != "windows" ]; then
+    MINGW_CC="x86_64-w64-mingw32-gcc"
+    MINGW_CXX="x86_64-w64-mingw32-g++"
+    if ! command -v "$MINGW_CXX" >/dev/null 2>&1; then
+        echo "Windows cross-build needs mingw-w64 ($MINGW_CXX not found)." >&2
+        echo "  macOS:  brew install mingw-w64" >&2
+        echo "  Debian: apt install gcc-mingw-w64" >&2
+        echo "Or build on a Windows machine: run ./build.sh $VERSION there." >&2
+        exit 1
+    fi
+    echo "Cross-building for windows/amd64 with mingw-w64..."
+    CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC="$MINGW_CC" CXX="$MINGW_CXX" \
+        go build -ldflags "-X main.Version=$VERSION" -o "$OUTPUT_DIR/${APP_NAME}-windows-amd64.exe" .
+    echo ""
+    echo "Build complete:"
+    ls -la "$OUTPUT_DIR/${APP_NAME}-windows-amd64.exe"
+    echo ""
+    echo "Note: Windows binaries are not yet code-signed (signing/SmartScreen pending)."
+    echo "Config is platform-independent — reuse releases/config.json or the bundled config.json."
+    exit 0
+fi
 
 # Build for current platform
 if [ "$CURRENT_OS" = "windows" ]; then
@@ -70,8 +100,6 @@ echo "Build complete! Files in $OUTPUT_DIR/:"
 ls -la "$OUTPUT_DIR/"
 
 echo ""
-echo "Note: Due to CGO dependencies (rtmidi), cross-compilation requires"
-echo "building on each target platform or using Docker with native toolchains."
-echo ""
 echo "macOS builds both arm64 and amd64 automatically."
-echo "To build for Windows, run this script on a Windows machine."
+echo "For Windows: './build.sh $VERSION windows' (cross-compile, needs mingw-w64),"
+echo "or run this script on a Windows machine."
